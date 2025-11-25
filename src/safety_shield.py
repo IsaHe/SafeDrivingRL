@@ -5,9 +5,8 @@ from metadrive.envs.metadrive_env import MetaDriveEnv
 
 class SafetyShieldWrapper(gym.Wrapper):
     """
-    Implements a 'Repulsive Action-Space Shield'.
-    Unlike a blocking shield (which sets action to 0), this shield actively
-    pushes the agent away from danger when the threshold is breached.
+    Implements a 'Progressive Repulsive Shield'.
+    Fixes the 'Deadlock' issue where the agent stops completely to be safe.
     """
 
     def __init__(self, env, lidar_threshold=0.25, num_lasers=240):
@@ -27,6 +26,7 @@ class SafetyShieldWrapper(gym.Wrapper):
 
     def step(self, action):
         if self.last_obs is not None:
+            # Lidar processing
             lidar_readings = self.last_obs[-self.num_lasers :]
             sector_size = self.num_lasers // 3
 
@@ -45,19 +45,22 @@ class SafetyShieldWrapper(gym.Wrapper):
             safe_accel = raw_accel
             shield_active = False
 
-            if min_front < self.lidar_threshold:
-                if raw_accel > -0.8:
-                    safe_accel = -1.0
+            if min_front < 0.10:
+                safe_accel = -1.0
+                shield_active = True
+            elif min_front < self.lidar_threshold:
+                if raw_accel > 0.0:
+                    safe_accel = 0.0
                     shield_active = True
 
-            if min_right < self.lidar_threshold:
-                if raw_steering < 0.15:
-                    safe_steering = 0.3
+            if min_right < 0.15:
+                if raw_steering < 0.05:
+                    safe_steering = 0.25
                     shield_active = True
 
-            elif min_left < self.lidar_threshold:
-                if raw_steering > -0.15:
-                    safe_steering = -0.3
+            elif min_left < 0.15:
+                if raw_steering > -0.05:
+                    safe_steering = -0.25
                     shield_active = True
 
             if shield_active:
@@ -72,7 +75,7 @@ class SafetyShieldWrapper(gym.Wrapper):
         self.last_obs = obs
 
         if "shield_active" in locals() and shield_active:
-            reward -= 0.5
+            reward -= 0.1
             info["shield_activated"] = True
         else:
             info["shield_activated"] = False
