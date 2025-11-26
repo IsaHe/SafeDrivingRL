@@ -11,7 +11,7 @@ class ActorCritic(nn.Module):
     Designed for continuous action spaces like MetaDrive.
     """
 
-    def __init__(self, state_dim, action_dim, hidden_dim=64):
+    def __init__(self, state_dim, action_dim, hidden_dim=256):
         super(ActorCritic, self).__init__()
 
         self.critic = nn.Sequential(
@@ -21,7 +21,7 @@ class ActorCritic(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_dim, 1),
         )
-        
+
         self.actor = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.Tanh(),
@@ -32,9 +32,6 @@ class ActorCritic(nn.Module):
         self.actor_mean = nn.Linear(hidden_dim, action_dim)
 
         self.actor_log_std = nn.Parameter(torch.zeros(1, action_dim))
-
-    def forward(self):
-        raise NotImplementedError
 
     def get_value(self, state):
         return self.critic(state)
@@ -69,14 +66,25 @@ class PPOAgent:
     """
 
     def __init__(
-        self, state_dim, action_dim, lr=3e-4, gamma=0.99, eps_clip=0.2, k_epochs=10
+        self,
+        state_dim,
+        action_dim,
+        lr=3e-4,
+        gamma=0.99,
+        eps_clip=0.2,
+        k_epochs=10,
+        hidden_dim=256,
     ):
         self.gamma = gamma
         self.eps_clip = eps_clip
         self.k_epochs = k_epochs
-        self.device = torch.device(
-            "cpu"
-        )
+
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
 
         self.policy = ActorCritic(state_dim, action_dim).to(self.device)
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)

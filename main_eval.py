@@ -80,7 +80,7 @@ def evaluate():
     action_dim = env.action_space.shape[0]
 
     policy = ActorCritic(state_dim, action_dim)
-    policy.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
+    policy.load_state_dict(torch.load(model_path, map_location=torch.device("mps")))
     policy.eval()
 
     if SHOW_DASHBOARD:
