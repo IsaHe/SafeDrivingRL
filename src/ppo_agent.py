@@ -6,11 +6,6 @@ import numpy as np
 
 
 class ActorCritic(nn.Module):
-    """
-    Neural Network for the Actor (Policy) and Critic (Value) functions.
-    Designed for continuous action spaces like MetaDrive.
-    """
-
     def __init__(self, state_dim, action_dim, hidden_dim=256):
         super(ActorCritic, self).__init__()
 
@@ -37,9 +32,6 @@ class ActorCritic(nn.Module):
         return self.critic(state)
 
     def get_action_and_value(self, state, action=None):
-        """
-        Samples an action given a state, or evaluates a given action (during update).
-        """
         actor_features = self.actor(state)
         action_mean = self.actor_mean(actor_features)
 
@@ -60,11 +52,6 @@ class ActorCritic(nn.Module):
 
 
 class PPOAgent:
-    """
-    PPO Algorithm implementation.
-    Manages the policy updates and memory buffer.
-    """
-
     def __init__(
         self,
         state_dim,
@@ -92,10 +79,6 @@ class PPOAgent:
         self.mse_loss = nn.MSELoss()
 
     def select_action(self, state):
-        """
-        Selects an action for the given state.
-        Returns: action (numpy), log_prob (float), value (float)
-        """
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             action, action_log_prob, _, value = self.policy.get_action_and_value(
@@ -109,11 +92,6 @@ class PPOAgent:
         )
 
     def update(self, memory):
-        """
-        Updates the policy using the collected batch of experience.
-        Args:
-            memory: A dictionary containing lists of states, actions, rewards, etc.
-        """
         old_states = torch.FloatTensor(np.array(memory["states"])).to(self.device)
         old_actions = torch.FloatTensor(np.array(memory["actions"])).to(self.device)
         old_log_probs = torch.FloatTensor(np.array(memory["log_probs"])).to(self.device)

@@ -1,18 +1,15 @@
+import argparse
 import numpy as np
 import torch
 import os
 import matplotlib.pyplot as plt
 from metadrive.envs.metadrive_env import MetaDriveEnv
 from src.safety_shield import SafetyShieldWrapper
-from src.ppo_agent import ActorCritic
+from src.ppo_agent import PPOAgent
 
 
 class AgentDashboard:
-    """
-    Real-time visualization of the agent's observation (Lidar) and actions.
-    """
-
-    def __init__(self, num_lasers):
+    def __init__(self, num_lasers, lidar_threshold=None):
         plt.ion()
         self.fig = plt.figure(figsize=(10, 6))
 
@@ -21,10 +18,32 @@ class AgentDashboard:
         self.num_lasers = num_lasers
         self.angles = np.linspace(0, 2 * np.pi, num_lasers, endpoint=False)
 
-        (self.lidar_line,) = self.ax_lidar.plot([], [], color="blue", linewidth=2)
+        (self.lidar_line,) = self.ax_lidar.plot(
+            [], [], color="blue", linewidth=2, label="Lidar Scan"
+        )
+
+        if lidar_threshold is not None:
+            theta_circle = np.linspace(0, 2 * np.pi, 200)
+            r_circle = np.full_like(theta_circle, lidar_threshold)
+
+            self.ax_lidar.plot(
+                theta_circle,
+                r_circle,
+                color="red",
+                linestyle="--",
+                linewidth=2,
+                label=f"Threshold ({lidar_threshold})",
+            )
+
+            self.ax_lidar.fill_between(
+                theta_circle, 0, r_circle, color="red", alpha=0.1
+            )
+
         self.ax_lidar.set_title("Agent Vision (Lidar)", pad=20)
         self.ax_lidar.set_ylim(0, 1)
         self.ax_lidar.set_yticklabels([])
+
+        self.ax_lidar.legend(loc="lower center", bbox_to_anchor=(0.5, -0.2))
 
     def update(self, obs, action):
         if len(obs) < self.num_lasers:
@@ -39,29 +58,56 @@ class AgentDashboard:
         plt.pause(0.001)
 
 
+def get_args():
+    parser = argparse.ArgumentParser(description="PPO Evaluation")
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        required=True,
+        help="Full name of the model file (e.g. ppo_shielded.pth)",
+    )
+    parser.add_argument(
+        "--lidar_threshold",
+        type=float,
+        default=0.10,
+        help="Lidar threshold for shield activation",
+    )
+    parser.add_argument(
+        "--no_shield", action="store_true", help="Disable the safety shield"
+    )
+    parser.add_argument(
+        "--episodes", type=int, default=5, help="Number of evaluation episodes"
+    )
+    parser.add_argument("--no_render", action="store_true", help="Disable rendering")
+    return parser.parse_args()
+
+
 def evaluate():
-    """
-    Main evaluation loop with real-time dashboard.
-    """
-    # Standard or shielded
-    MODEL_NAME = "ppo_shielded.pth"
-    ENABLE_SHIELD = True
-    NUM_EPISODES = 5
-    RENDER = True
+    args = get_args()
+
+    MODEL_NAME = args.model_name
+    ENABLE_SHIELD = not args.no_shield
+    LIDAR_THRESHOLD = args.lidar_threshold
+    NUM_EPISODES = args.episodes
+    RENDER = not args.no_render
     SHOW_DASHBOARD = True
 
     model_path = os.path.join("./data/models", MODEL_NAME)
     if not os.path.exists(model_path):
-        print(f"Error: Model not found at {model_path}")
-        return
+        if os.path.exists(MODEL_NAME):
+            model_path = MODEL_NAME
+        else:
+            print(f"Error: Model not found at {model_path}")
+            return
 
     num_lasers = 240
     env_config = {
         "use_render": RENDER,
         "manual_control": False,
-        "traffic_density": 0.15,
+        "traffic_density": 0.10,
         "num_scenarios": 1,
         "start_seed": 42,
+        "map": "SSSSSS",
         "vehicle_config": {
             "lidar": {"num_lasers": num_lasers, "distance": 50, "num_others": 0}
         },
@@ -70,8 +116,10 @@ def evaluate():
     env_raw = MetaDriveEnv(env_config)
 
     if ENABLE_SHIELD:
-        print("Evaluation Mode: Shield Active")
-        env = SafetyShieldWrapper(env_raw, lidar_threshold=0.25, num_lasers=num_lasers)
+        print(f"Evaluation Mode: Shield Active (Threshold: {LIDAR_THRESHOLD})")
+        env = SafetyShieldWrapper(
+            env_raw, num_lasers=num_lasers, lidar_threshold=LIDAR_THRESHOLD
+        )
     else:
         print("Evaluation Mode: Standard (No Shield)")
         env = env_raw
@@ -79,12 +127,25 @@ def evaluate():
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
-    policy = ActorCritic(state_dim, action_dim)
-    policy.load_state_dict(torch.load(model_path, map_location=torch.device("mps")))
-    policy.eval()
+    agent = PPOAgent(state_dim, action_dim)
+
+    try:
+        agent.policy.load_state_dict(
+            torch.load(model_path, map_location=torch.device("cpu"))
+        )
+    except AttributeError:
+        if hasattr(agent, "load"):
+            agent.load(model_path)
+        else:
+            print(
+                "Error: No se pudo cargar el modelo en PPOAgent. Verifica la estructura de tu agente."
+            )
+            return
+
+    agent.policy.eval()
 
     if SHOW_DASHBOARD:
-        dashboard = AgentDashboard(num_lasers)
+        dashboard = AgentDashboard(num_lasers, lidar_threshold=LIDAR_THRESHOLD)
         print(
             "Dashboard initialized. You should see two windows: Simulation and Dashboard."
         )
@@ -105,11 +166,10 @@ def evaluate():
             step = 0
 
             while not (done or truncated):
-                with torch.no_grad():
-                    obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
-                    actor_features = policy.actor(obs_tensor)
-                    action_mean = policy.actor_mean(actor_features)
-                    action = action_mean.cpu().numpy().flatten()
+                try:
+                    action, _, _ = agent.select_action(obs, deterministic=True)
+                except TypeError:
+                    action, _, _ = agent.select_action(obs)
 
                 obs, reward, done, truncated, info = env.step(action)
                 episode_reward += reward
@@ -144,6 +204,7 @@ def evaluate():
         print(f"Model: {MODEL_NAME}")
         print(f"Shield Active: {ENABLE_SHIELD}")
         print(f"Average Reward: {avg_reward:.2f}")
+        print(f"Success Rate: {(NUM_EPISODES - crashes) / NUM_EPISODES * 100:.1f}%")
         print(f"Total Crashes: {crashes}/{NUM_EPISODES}")
         if ENABLE_SHIELD:
             print(f"Total Shield Interventions: {interventions}")

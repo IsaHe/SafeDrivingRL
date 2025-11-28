@@ -10,7 +10,7 @@ class SafetyShieldWrapper(gym.Wrapper):
     pushes the agent away from danger when the threshold is breached.
     """
 
-    def __init__(self, env, lidar_threshold=0.25, num_lasers=240):
+    def __init__(self, env, lidar_threshold=0.10, num_lasers=240):
         super().__init__(env)
         self.lidar_threshold = lidar_threshold
         self.num_lasers = num_lasers
@@ -47,17 +47,17 @@ class SafetyShieldWrapper(gym.Wrapper):
 
             if min_front < self.lidar_threshold:
                 if raw_accel > -0.8:
-                    safe_accel = -1.0
+                    # safe_accel = -9.0
                     shield_active = True
 
             if min_right < self.lidar_threshold:
                 if raw_steering < 0.15:
-                    safe_steering = 0.3
+                    # safe_steering = 0.1
                     shield_active = True
 
             elif min_left < self.lidar_threshold:
                 if raw_steering > -0.15:
-                    safe_steering = -0.3
+                    # safe_steering = -0.1
                     shield_active = True
 
             if shield_active:
@@ -72,7 +72,7 @@ class SafetyShieldWrapper(gym.Wrapper):
         self.last_obs = obs
 
         if "shield_active" in locals() and shield_active:
-            reward -= 0.5
+            reward -= 8
             info["shield_activated"] = True
         else:
             info["shield_activated"] = False

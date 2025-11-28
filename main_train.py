@@ -1,3 +1,5 @@
+import argparse
+from collections import deque
 import numpy as np
 import os
 from datetime import datetime
@@ -5,49 +7,94 @@ from torch.utils.tensorboard import SummaryWriter
 from metadrive.envs.metadrive_env import MetaDriveEnv
 from src.safety_shield import SafetyShieldWrapper
 from src.ppo_agent import PPOAgent
+from src.reward_shaper import RewardShapingWrapper
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description="PPO Training with Safety Shield")
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="ppo_model",
+        help="Base name for the model file",
+    )
+    parser.add_argument(
+        "--lidar_threshold",
+        type=float,
+        default=0.10,
+        help="Lidar threshold for shield activation",
+    )
+    parser.add_argument(
+        "--lr", type=float, default=0.0002, help="Learning rate for PPO"
+    )
+    parser.add_argument(
+        "--no_shield",
+        action="store_true",
+        help="Disable the safety shield (Standard PPO)",
+    )
+    parser.add_argument(
+        "--max_episodes",
+        type=int,
+        default=2000,
+        help="Maximum number of training episodes",
+    )
+    parser.add_argument(
+        "--smoothness_weight",
+        type=float,
+        default=0.5,
+        help="Penalty factor for steering changes (anti-zigzag)",
+    )
+    parser.add_argument(
+        "--speed_weight",
+        type=float,
+        default=0.05,
+        help="Reward bonus factor for velocity",
+    )
+    return parser.parse_args()
 
 
 def train():
-    """
-    Main training loop using TensorBoard for logging.
-    Includes timestamps to separate different execution runs.
-    """
-    # --- CONFIGURATION ---
-    MAX_EPISODES = 2000
+    args = get_args()
+
+    MAX_EPISODES = args.max_episodes
     MAX_STEPS = 1000
     UPDATE_TIMESTEP = 2000
-    LR = 0.0003
-
-    # TOGGLE THIS for comparison
-    USE_SHIELD = True
-
+    LR = args.lr
+    USE_SHIELD = not args.no_shield
+    LIDAR_THRESHOLD = args.lidar_threshold
     RENDER = False
 
-    # Create a unique run name with timestamp to prevent overwriting logs
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    mode_name = "shielded" if USE_SHIELD else "standard"
-    run_name = f"{mode_name}_{timestamp}"
+    SPEED_WEIGHT = args.speed_weight
+    SMOOTHNESS_WEIGHT = args.smoothness_weight
 
-    # TensorBoard Writer
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    shield_status = "shielded" if USE_SHIELD else "standard"
+    run_name = f"{args.model_name}_{shield_status}_{timestamp}"
+
     log_dir = f"./runs/{run_name}"
     writer = SummaryWriter(log_dir=log_dir)
-    print(f"📁 Logging training data to: {log_dir}")
+    print(f"Logging training data to: {log_dir}")
+    print(f"Params: LR={LR}, Shield={USE_SHIELD}, Threshold={LIDAR_THRESHOLD}")
 
-    # Directories
     os.makedirs("./data/models", exist_ok=True)
-    model_filename = f"./data/models/ppo_{mode_name}.pth"
+    final_model_name = f"{args.model_name}_{shield_status}.pth"
+    model_filename = f"./data/models/{final_model_name}"
 
-    # Environment Setup
+    reward_window = deque(maxlen=100)
+    success_window = deque(maxlen=100)
+
     num_lasers = 240
     env_config = {
         "use_render": RENDER,
         "manual_control": False,
         "traffic_density": 0.10,
         "num_scenarios": 1,
+        "map": "SSSSSS",
         "start_seed": 42,
         "out_of_road_penalty": 10.0,
         "crash_vehicle_penalty": 10.0,
         "crash_object_penalty": 10.0,
+        "success_reward": 30.0,
         "vehicle_config": {
             "lidar": {"num_lasers": num_lasers, "distance": 50, "num_others": 0}
         },
@@ -56,13 +103,20 @@ def train():
     env_raw = MetaDriveEnv(env_config)
 
     if USE_SHIELD:
-        print("🛡️  Training WITH Repulsive Safety Shield")
-        env = SafetyShieldWrapper(env_raw, lidar_threshold=0.25, num_lasers=num_lasers)
+        print(
+            f"🛡️  Training WITH Repulsive Safety Shield (Threshold: {LIDAR_THRESHOLD})"
+        )
+        env_base = SafetyShieldWrapper(
+            env_raw, num_lasers=num_lasers, lidar_threshold=LIDAR_THRESHOLD
+        )
     else:
         print("⚠️  Training WITHOUT Safety Shield (Standard PPO)")
-        env = env_raw
+        env_base = env_raw
 
-    # Agent Setup
+    env = RewardShapingWrapper(
+        env_base, speed_weight=SPEED_WEIGHT, smoothness_weight=SMOOTHNESS_WEIGHT
+    )
+
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
     agent = PPOAgent(state_dim, action_dim, lr=LR)
@@ -81,17 +135,13 @@ def train():
             for step in range(MAX_STEPS):
                 timestep += 1
 
-                # 1. Action Selection
                 action, log_prob, _ = agent.select_action(obs)
 
-                # 2. Environment Step
                 next_obs, reward, done, truncated, info = env.step(action)
 
-                # Track Shield usage (will be 0 if shield is disabled)
                 if info.get("shield_activated", False):
                     ep_shield_activations += 1
 
-                # Store in memory
                 memory["states"].append(obs)
                 memory["actions"].append(action)
                 memory["log_probs"].append(log_prob)
@@ -101,15 +151,15 @@ def train():
                 obs = next_obs
                 episode_reward += reward
 
-                # 3. PPO Update
                 if timestep % UPDATE_TIMESTEP == 0:
                     agent.update(memory)
                     for key in memory:
                         memory[key] = []
 
-                # 4. Episode End & Logging
                 if done or truncated:
                     outcome = 0
+                    is_success = 0
+
                     if info.get("crash_vehicle", False):
                         outcome = 1
                     elif info.get("crash_object", False):
@@ -118,24 +168,32 @@ def train():
                         outcome = 3
                     elif info.get("arrive_dest", False):
                         outcome = 4
+                        is_success = 1
 
-                    # Write to TensorBoard
-                    writer.add_scalar("Reward/Episode", episode_reward, episode)
+                    reward_window.append(episode_reward)
+                    success_window.append(is_success)
+
+                    avg_reward_100 = np.mean(reward_window)
+                    success_rate = np.mean(success_window)
+
+                    writer.add_scalar("Reward/Raw_Episode", episode_reward, episode)
+                    writer.add_scalar(
+                        "Reward/Average_100_Episodes", avg_reward_100, episode
+                    )
+                    writer.add_scalar("Training/Success_Rate", success_rate, episode)
                     writer.add_scalar(
                         "Safety/Shield_Activations", ep_shield_activations, episode
                     )
                     writer.add_scalar("Training/Episode_Length", step, episode)
                     writer.add_scalar("Outcome/Type", outcome, episode)
-                    writer.flush()  # Force write to disk
+                    writer.flush()
                     break
 
-            # Console Logging
             if episode % 10 == 0:
                 print(
-                    f"Ep {episode}/{MAX_EPISODES} | R: {episode_reward:.2f} | Shield: {ep_shield_activations}"
+                    f"Ep {episode} | R: {episode_reward:.1f} | Avg100: {avg_reward_100:.1f} | SuccessRate: {success_rate:.2f} | Out: {outcome}"
                 )
 
-            # Save Model
             if episode % 100 == 0:
                 agent.save(model_filename)
 
@@ -144,7 +202,16 @@ def train():
     finally:
         env.close()
         writer.close()
-        print("Training finished.")
+        print("\n" + "=" * 50)
+        print("TRAINING FINISHED")
+        print("To evaluate this model, run the following command:")
+
+        eval_cmd = f"python main_eval.py --model_name {final_model_name} --lidar_threshold {LIDAR_THRESHOLD}"
+        if not USE_SHIELD:
+            eval_cmd += " --no_shield"
+
+        print(f"\n👉 {eval_cmd}")
+        print("=" * 50 + "\n")
 
 
 if __name__ == "__main__":
