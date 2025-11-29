@@ -108,7 +108,7 @@ def train():
     env_config = {
         "use_render": RENDER,
         "manual_control": False,
-        "traffic_density": 0.10,
+        "traffic_density": TRAFFIC_DENSITY,
         "num_scenarios": 1,
         "map": "SSSSSS",
         "start_seed": 42,
@@ -148,6 +148,11 @@ def train():
 
     try:
         for episode in range(1, MAX_EPISODES + 1):
+            progress = (episode - 1) / MAX_EPISODES
+            new_lr = LR * (1.0 - progress)
+            new_lr = max(new_lr, 1e-6)
+            agent.set_lr(new_lr)
+
             obs, _ = env.reset()
             episode_reward = 0
             ep_shield_activations = 0
@@ -206,6 +211,7 @@ def train():
                     )
                     writer.add_scalar("Training/Episode_Length", step, episode)
                     writer.add_scalar("Outcome/Type", outcome, episode)
+                    writer.add_scalar("Training/Learning_Rate", new_lr, episode)
                     writer.flush()
                     break
 
