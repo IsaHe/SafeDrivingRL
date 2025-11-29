@@ -112,6 +112,11 @@ class PPOAgent:
         )
         rewards_to_go = rewards_to_go.unsqueeze(1)
 
+        total_policy_loss = 0
+        total_value_loss = 0
+        total_entropy = 0
+        total_approx_kl = 0
+
         for _ in range(self.k_epochs):
             _, logprobs, dist_entropy, state_values = self.policy.get_action_and_value(
                 old_states, old_actions
@@ -126,15 +131,32 @@ class PPOAgent:
                 torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
             )
 
-            loss = (
-                -torch.min(surr1, surr2)
-                + 0.5 * self.mse_loss(state_values, rewards_to_go)
-                - 0.01 * dist_entropy
-            )
+            policy_loss = -torch.min(surr1, surr2)
+            value_loss = 0.5 * self.mse_loss(state_values, rewards_to_go)
+            entropy_loss = -0.01 * dist_entropy
+
+            loss = policy_loss + value_loss + entropy_loss
 
             self.optimizer.zero_grad()
             loss.mean().backward()
             self.optimizer.step()
+
+            total_policy_loss += policy_loss.mean().item()
+            total_value_loss += value_loss.item()
+            total_entropy += dist_entropy.mean().item()
+
+            # http://joschu.net/blog/kl-approx.html
+            with torch.no_grad():
+                log_ratio = logprobs - old_log_probs.unsqueeze(1)
+                approx_kl = ((torch.exp(log_ratio) - 1) - log_ratio).mean()
+                total_approx_kl += approx_kl.item()
+
+        return {
+            "policy_loss": total_policy_loss / self.k_epochs,
+            "value_loss": total_value_loss / self.k_epochs,
+            "entropy": total_entropy / self.k_epochs,
+            "approx_kl": total_approx_kl / self.k_epochs,
+        }
 
     def save(self, filename):
         torch.save(self.policy.state_dict(), filename)

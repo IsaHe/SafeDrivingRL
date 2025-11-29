@@ -177,7 +177,21 @@ def train():
                 episode_reward += reward
 
                 if timestep % UPDATE_TIMESTEP == 0:
-                    agent.update(memory)
+                    train_metrics = agent.update(memory)
+
+                    writer.add_scalar(
+                        "Loss/Policy_Loss", train_metrics["policy_loss"], episode
+                    )
+                    writer.add_scalar(
+                        "Loss/Value_Loss", train_metrics["value_loss"], episode
+                    )
+                    writer.add_scalar(
+                        "Training/Entropy", train_metrics["entropy"], episode
+                    )
+                    writer.add_scalar(
+                        "Training/Approx_KL", train_metrics["approx_kl"], episode
+                    )
+
                     for key in memory:
                         memory[key] = []
 
