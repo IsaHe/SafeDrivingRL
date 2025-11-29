@@ -50,6 +50,24 @@ def get_args():
         default=0.05,
         help="Reward bonus factor for velocity",
     )
+    parser.add_argument(
+        "--centering_weight",
+        type=float,
+        default=0.5,
+        help="Penalty for keeping steering wheel turned (centering)",
+    )
+    parser.add_argument(
+        "--action_smoothing",
+        type=float,
+        default=0.0,
+        help="Exponential moving average factor for steering (0.0 to 1.0). 0.0 disables it.",
+    )
+    parser.add_argument(
+        "--traffic_density",
+        type=float,
+        default=0.1,
+        help="Density of traffic in MetaDrive",
+    )
     return parser.parse_args()
 
 
@@ -62,10 +80,13 @@ def train():
     LR = args.lr
     USE_SHIELD = not args.no_shield
     LIDAR_THRESHOLD = args.lidar_threshold
+    TRAFFIC_DENSITY = args.traffic_density
     RENDER = False
 
     SPEED_WEIGHT = args.speed_weight
     SMOOTHNESS_WEIGHT = args.smoothness_weight
+    ACTION_SMOOTHING = args.action_smoothing
+    CENTERING_WEIGHT = args.centering_weight
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     shield_status = "shielded" if USE_SHIELD else "standard"
@@ -100,22 +121,21 @@ def train():
         },
     }
 
-    env_raw = MetaDriveEnv(env_config)
+    env = RewardShapingWrapper(
+        env=MetaDriveEnv(env_config),
+        speed_weight=SPEED_WEIGHT,
+        smoothness_weight=SMOOTHNESS_WEIGHT,
+        centering_weight=CENTERING_WEIGHT,
+        action_smoothing=ACTION_SMOOTHING,
+    )
 
     if USE_SHIELD:
-        print(
-            f"🛡️  Training WITH Repulsive Safety Shield (Threshold: {LIDAR_THRESHOLD})"
-        )
-        env_base = SafetyShieldWrapper(
-            env_raw, num_lasers=num_lasers, lidar_threshold=LIDAR_THRESHOLD
+        print(f"Training WITH Safety Shield (Threshold: {LIDAR_THRESHOLD})")
+        env = SafetyShieldWrapper(
+            env, num_lasers=num_lasers, lidar_threshold=LIDAR_THRESHOLD
         )
     else:
-        print("⚠️  Training WITHOUT Safety Shield (Standard PPO)")
-        env_base = env_raw
-
-    env = RewardShapingWrapper(
-        env_base, speed_weight=SPEED_WEIGHT, smoothness_weight=SMOOTHNESS_WEIGHT
-    )
+        print("Training WITHOUT Safety Shield")
 
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
@@ -206,7 +226,7 @@ def train():
         print("TRAINING FINISHED")
         print("To evaluate this model, run the following command:")
 
-        eval_cmd = f"python main_eval.py --model_name {final_model_name} --lidar_threshold {LIDAR_THRESHOLD}"
+        eval_cmd = f"python main_eval.py --model_name {final_model_name} --lidar_threshold {LIDAR_THRESHOLD} --action_smoothing {ACTION_SMOOTHING}"
         if not USE_SHIELD:
             eval_cmd += " --no_shield"
 

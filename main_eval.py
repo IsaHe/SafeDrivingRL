@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from metadrive.envs.metadrive_env import MetaDriveEnv
 from src.safety_shield import SafetyShieldWrapper
 from src.ppo_agent import PPOAgent
+from src.reward_shaper import RewardShapingWrapper
 
 
 class AgentDashboard:
@@ -78,6 +79,18 @@ def get_args():
     parser.add_argument(
         "--episodes", type=int, default=5, help="Number of evaluation episodes"
     )
+    parser.add_argument(
+        "--traffic_density",
+        type=float,
+        default=0.1,
+        help="Density of traffic in MetaDrive",
+    )
+    parser.add_argument(
+        "--action_smoothing",
+        type=float,
+        default=0.0,
+        help="Must match the value used in training for consistent behavior.",
+    )
     parser.add_argument("--no_render", action="store_true", help="Disable rendering")
     return parser.parse_args()
 
@@ -91,6 +104,8 @@ def evaluate():
     NUM_EPISODES = args.episodes
     RENDER = not args.no_render
     SHOW_DASHBOARD = True
+    TRAFFIC_DENSITY = args.traffic_density
+    ACTION_SMOOTHING = args.action_smoothing
 
     model_path = os.path.join("./data/models", MODEL_NAME)
     if not os.path.exists(model_path):
@@ -106,23 +121,28 @@ def evaluate():
         "manual_control": False,
         "traffic_density": 0.10,
         "num_scenarios": 1,
-        "start_seed": 42,
+        "start_seed": 100,
         "map": "SSSSSS",
         "vehicle_config": {
             "lidar": {"num_lasers": num_lasers, "distance": 50, "num_others": 0}
         },
     }
 
-    env_raw = MetaDriveEnv(env_config)
+    env = RewardShapingWrapper(
+        env=MetaDriveEnv(env_config),
+        speed_weight=0.0,
+        smoothness_weight=0.0,
+        centering_weight=0.0,
+        action_smoothing=ACTION_SMOOTHING,
+    )
 
     if ENABLE_SHIELD:
         print(f"Evaluation Mode: Shield Active (Threshold: {LIDAR_THRESHOLD})")
         env = SafetyShieldWrapper(
-            env_raw, num_lasers=num_lasers, lidar_threshold=LIDAR_THRESHOLD
+            env, num_lasers=num_lasers, lidar_threshold=LIDAR_THRESHOLD
         )
     else:
         print("Evaluation Mode: Standard (No Shield)")
-        env = env_raw
 
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
