@@ -104,7 +104,7 @@ class SafetyShieldWrapper(gym.Wrapper):
 
             info["shield_activated"] = True
 
-            reward = -0.5
+            reward = -10
 
         else:
             info["shield_activated"] = False
