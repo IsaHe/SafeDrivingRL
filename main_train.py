@@ -19,9 +19,15 @@ def get_args():
         help="Base name for the model file",
     )
     parser.add_argument(
-        "--lidar_threshold",
+        "--front_threshold",
         type=float,
-        default=0.10,
+        default=0.15,
+        help="Lidar threshold for shield activation",
+    )
+    parser.add_argument(
+        "--side_threshold",
+        type=float,
+        default=0.04,
         help="Lidar threshold for shield activation",
     )
     parser.add_argument(
@@ -68,6 +74,12 @@ def get_args():
         default=0.1,
         help="Density of traffic in MetaDrive",
     )
+    parser.add_argument(
+        "--ckpt_freq",
+        type=int,
+        default=200,
+        help="Frequency (in episodes) to save a checkpoint file",
+    )
     return parser.parse_args()
 
 
@@ -79,7 +91,8 @@ def train():
     UPDATE_TIMESTEP = 2000
     LR = args.lr
     USE_SHIELD = not args.no_shield
-    LIDAR_THRESHOLD = args.lidar_threshold
+    FRONT_THRESHOLD = args.front_threshold
+    SIDE_THRESHOLD = args.side_threshold
     TRAFFIC_DENSITY = args.traffic_density
     RENDER = False
 
@@ -88,6 +101,8 @@ def train():
     ACTION_SMOOTHING = args.action_smoothing
     CENTERING_WEIGHT = args.centering_weight
 
+    CKPT_FREQ = args.ckpt_freq
+
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     shield_status = "shielded" if USE_SHIELD else "standard"
     run_name = f"{args.model_name}_{shield_status}_{timestamp}"
@@ -95,11 +110,22 @@ def train():
     log_dir = f"./runs/{run_name}"
     writer = SummaryWriter(log_dir=log_dir)
     print(f"Logging training data to: {log_dir}")
-    print(f"Params: LR={LR}, Shield={USE_SHIELD}, Threshold={LIDAR_THRESHOLD}")
+    print(
+        f"Params: LR={LR}, Shield={USE_SHIELD}, Front Threshold={FRONT_THRESHOLD},Side Threshold={SIDE_THRESHOLD}"
+    )
 
     os.makedirs("./data/models", exist_ok=True)
     final_model_name = f"{args.model_name}_{shield_status}.pth"
     model_filename = f"./data/models/{final_model_name}"
+
+    ckpt_dir = f"./data/models/{run_name}_checkpoints"
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    final_model_name = f"{args.model_name}_{shield_status}_final.pth"
+    final_model_path = f"./data/models/{final_model_name}"
+
+    best_model_path = f"./data/models/{args.model_name}_{shield_status}_best.pth"
+    best_avg_reward = -float("inf")
 
     reward_window = deque(maxlen=100)
     success_window = deque(maxlen=100)
@@ -109,7 +135,7 @@ def train():
         "use_render": RENDER,
         "manual_control": False,
         "traffic_density": TRAFFIC_DENSITY,
-        "num_scenarios": 1,
+        "num_scenarios": 10,
         "map": "SSSSSS",
         "start_seed": 42,
         "out_of_road_penalty": 10.0,
@@ -130,9 +156,12 @@ def train():
     )
 
     if USE_SHIELD:
-        print(f"Training WITH Safety Shield (Threshold: {LIDAR_THRESHOLD})")
+        print(f"Training WITH Safety Shield")
         env = SafetyShieldWrapper(
-            env, num_lasers=num_lasers, lidar_threshold=LIDAR_THRESHOLD
+            env,
+            num_lasers=num_lasers,
+            front_threshold=FRONT_THRESHOLD,
+            side_threshold=SIDE_THRESHOLD,
         )
     else:
         print("Training WITHOUT Safety Shield")
@@ -229,13 +258,23 @@ def train():
                     writer.flush()
                     break
 
+            if episode >= 1000 and avg_reward_100 > best_avg_reward + 30:
+                best_avg_reward = avg_reward_100
+                agent.save(best_model_path)
+                print(
+                    f"New Best Model saved at Ep {episode} with Avg Reward: {best_avg_reward:.1f}"
+                )
+
+            if episode % CKPT_FREQ == 0:
+                ckpt_name = f"checkpoint_ep_{episode}.pth"
+                ckpt_full_path = os.path.join(ckpt_dir, ckpt_name)
+                agent.save(ckpt_full_path)
+                print(f"Checkpoint saved: {ckpt_name}")
+
             if episode % 10 == 0:
                 print(
                     f"Ep {episode} | R: {episode_reward:.1f} | Avg100: {avg_reward_100:.1f} | SuccessRate: {success_rate:.2f} | Out: {outcome}"
                 )
-
-            if episode % 100 == 0:
-                agent.save(model_filename)
 
     except KeyboardInterrupt:
         print("Training interrupted.")
@@ -246,7 +285,7 @@ def train():
         print("TRAINING FINISHED")
         print("To evaluate this model, run the following command:")
 
-        eval_cmd = f"python main_eval.py --model_name {final_model_name} --lidar_threshold {LIDAR_THRESHOLD} --action_smoothing {ACTION_SMOOTHING}"
+        eval_cmd = f"python main_eval.py --model_name {final_model_name} --front_threshold {FRONT_THRESHOLD} --side_threshold {SIDE_THRESHOLD} --action_smoothing {ACTION_SMOOTHING}"
         if not USE_SHIELD:
             eval_cmd += " --no_shield"
 

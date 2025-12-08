@@ -68,7 +68,13 @@ def get_args():
         help="Full name of the model file (e.g. ppo_shielded.pth)",
     )
     parser.add_argument(
-        "--lidar_threshold",
+        "--front_threshold",
+        type=float,
+        default=0.10,
+        help="Lidar threshold for shield activation",
+    )
+    parser.add_argument(
+        "--side_threshold",
         type=float,
         default=0.10,
         help="Lidar threshold for shield activation",
@@ -100,7 +106,8 @@ def evaluate():
 
     MODEL_NAME = args.model_name
     ENABLE_SHIELD = not args.no_shield
-    LIDAR_THRESHOLD = args.lidar_threshold
+    FRONT_THRESHOLD = args.front_threshold
+    SIDE_THRESHOLD = args.side_threshold
     NUM_EPISODES = args.episodes
     RENDER = not args.no_render
     SHOW_DASHBOARD = True
@@ -119,7 +126,7 @@ def evaluate():
     env_config = {
         "use_render": RENDER,
         "manual_control": False,
-        "traffic_density": 0.10,
+        "traffic_density": TRAFFIC_DENSITY,
         "num_scenarios": 1,
         "start_seed": 100,
         "map": "SSSSSS",
@@ -137,9 +144,12 @@ def evaluate():
     )
 
     if ENABLE_SHIELD:
-        print(f"Evaluation Mode: Shield Active (Threshold: {LIDAR_THRESHOLD})")
+        print(f"Evaluation Mode: Shield Active")
         env = SafetyShieldWrapper(
-            env, num_lasers=num_lasers, lidar_threshold=LIDAR_THRESHOLD
+            env,
+            num_lasers=num_lasers,
+            front_threshold=FRONT_THRESHOLD,
+            side_threshold=SIDE_THRESHOLD,
         )
     else:
         print("Evaluation Mode: Standard (No Shield)")
@@ -165,7 +175,7 @@ def evaluate():
     agent.policy.eval()
 
     if SHOW_DASHBOARD:
-        dashboard = AgentDashboard(num_lasers, lidar_threshold=LIDAR_THRESHOLD)
+        dashboard = AgentDashboard(num_lasers, lidar_threshold=FRONT_THRESHOLD)
         print(
             "Dashboard initialized. You should see two windows: Simulation and Dashboard."
         )
